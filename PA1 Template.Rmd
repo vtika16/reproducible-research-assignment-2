@@ -1,0 +1,234 @@
+---
+title: "Week 2 analysis"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##Study of major storms
+
+Storms and other severe weather events can cause both public health and economic problems for communities and municipalities. Many severe events can result in fatalities, injuries, and property damage, and preventing such outcomes to the extent possible is a key concern.
+
+This project involves exploring the U.S. National Oceanic and Atmospheric Administration's (storm_data) storm database. This database tracks characteristics of major storms and weather events in the United States, including when and where they occur, as well as estimates of any fatalities, injuries, and property damage.
+
+##Assignment
+
+1.Across the United States, which types of events (as indicated in the [Math Processing Error] variable) are most harmful with respect to population health?
+
+2.Across the United States, which types of events have the greatest economic consequences?
+
+This assignment will walk, step by step, the procedure taken to answer the questions to this assignment. 
+
+###1. Set the libraries to start the analysis. 
+
+```{r set directory, echo = TRUE}
+setwd("/Users/vtika/Desktop/R Programming/Reproducible Research/Week 4/")
+```
+
+```{r set libraries, echo = TRUE}
+library(stringr)
+library(lubridate)
+library(sqldf)
+library(ggplot2)
+library(reshape2)
+library(gridExtra)
+library(dplyr)
+library(data.table)
+```
+
+```{r, echo=TRUE}
+storm_data.url = "https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2"
+storm_data.bz2 = "storm-data.csv.bz2"
+if (! file.exists(storm_data.bz2)) {
+    download.file(url=storm_data.url, destfile=storm_data.bz2)
+}
+storm_data <- data.table(read.csv(storm_data.bz2))
+```
+
+
+Process of Field "EVTYPE".
+
+
+```{r, echo = TRUE}
+nrow(distinct(select(storm_data, EVTYPE)))
+```
+
+
+First, remove surrounding whitespace on event types and uppercase everything:
+
+```{r, echo = TRUE}
+storm_data$EVTYPE2 <- trimws(storm_data$EVTYPE)
+storm_data$EVTYPE2 <- toupper(storm_data$EVTYPE2)
+nrow(distinct(select(storm_data, EVTYPE2)))
+```
+
+Next, remove any summary fields and any fields containing "?" within them.
+
+```{r, echo = TRUE}
+storm_data2 <- filter(storm_data, !grepl('summary', storm_data$EVTYPE2, ignore.case=TRUE))
+storm_data2 <- filter(storm_data2, EVTYPE2 != '?')
+nrow(distinct(select(storm_data2, EVTYPE2)))
+
+# NOTE: the code below will generate a long list of event types
+evtypes <- distinct(select(storm_data2, EVTYPE2)) %>% arrange(EVTYPE2)
+head(evtypes)
+```
+
+
+
+Next, remove all numbers that start with a letter and a parenthesis, as well. 
+
+```{r}
+# remove numbers with potential leading letter from event types
+storm_data2$EVTYPE3 <- gsub('[A-Z]?[0-9]+', '', storm_data2$EVTYPE2)
+
+# remove ' MPH'
+storm_data2$EVTYPE3 <- sub(' MPH', '', storm_data2$EVTYPE3)
+
+# remove any non-letter character from event types
+storm_data2$EVTYPE3 <- gsub('[^A-Z]', '', storm_data2$EVTYPE3)
+
+evtypes <- distinct(select(storm_data2, EVTYPE3)) %>% arrange(EVTYPE3)
+for (row in 1:(nrow(evtypes)-1)) {
+    left <- evtypes[row, 1]
+    right <- evtypes[row+1, 1]
+    distance <- adist(left, right)[1, 1]
+    if (distance < 2) {
+        nleft <- length(storm_data2[storm_data2$EVTYPE3 == left, 'EVTYPE3'])
+        nright <- length(storm_data2[storm_data2$EVTYPE3 == right, 'EVTYPE3'])
+        if (nleft > nright) {
+            storm_data2$EVTYPE3[storm_data2$EVTYPE3 == right] <- left
+            #print(c(right, length(storm_data2[storm_data2$EVTYPE3 == right, 'EVTYPE3'])))
+        }
+        else {
+            storm_data2$EVTYPE3[storm_data2$EVTYPE3 == left] <- right
+            #print(c(left, length(storm_data2[storm_data2$EVTYPE3 == left, 'EVTYPE3'])))
+        }
+    }
+}
+evtypes <- distinct(select(storm_data2, EVTYPE3)) %>% arrange(EVTYPE3)
+```
+
+Next is to call out all the fields for the analysis.This requires calling these fields by their appropriate data types to perform the necessary analysis for the questions. 
+
+```{r}
+storm_data2$FATALITIES <- as.numeric(storm_data2$FATALITIES)
+storm_data2$INJURIES <- as.numeric(storm_data2$INJURIES)
+storm_data2$PROPDMG <- as.numeric(storm_data2$PROPDMG)
+storm_data2$CROPDMG <- as.numeric(storm_data2$CROPDMG)
+
+storm_data2$FATALITIES <- as.numeric(storm_data2$FATALITIES)
+storm_data2$INJURIES <- as.numeric(storm_data2$INJURIES)
+
+# first all uppercase
+storm_data2$PROPDMGEXP <- as.character(storm_data2$PROPDMGEXP)
+storm_data2$PROPDMGEXP <- toupper(storm_data2$PROPDMGEXP)
+storm_data2$PROPDMGEXP <- trimws(storm_data2$PROPDMGEXP)
+
+# replace `?` and `-` and `+` and ` ` with `0`
+storm_data2$PROPDMGEXP[storm_data2$PROPDMGEXP %in% c('?', '-', '', '+')] <- '0'
+
+# replace K, M, B, H with 3, 6, 9, 2 respectively
+storm_data2$PROPDMGEXP[storm_data2$PROPDMGEXP == 'K'] <- '3'
+storm_data2$PROPDMGEXP[storm_data2$PROPDMGEXP == 'M'] <- '6'
+storm_data2$PROPDMGEXP[storm_data2$PROPDMGEXP == 'B'] <- '9'
+storm_data2$PROPDMGEXP[storm_data2$PROPDMGEXP == 'H'] <- '2'
+storm_data2$PROPDMGEXP <- as.numeric(storm_data2$PROPDMGEXP)
+
+
+# create new field with multiplied values
+storm_data2 <- mutate(storm_data2, property.damage = PROPDMG * (10 ^ PROPDMGEXP))
+
+# repeat for crop damage
+# first all uppercase
+storm_data2$CROPDMGEXP <- as.character(storm_data2$PROPDMGEXP)
+storm_data2$CROPDMGEXP <- toupper(storm_data2$PROPDMGEXP)
+storm_data2$CROPDMGEXP <- trimws(storm_data2$PROPDMGEXP)
+
+# replace `?` and `-` and `+` and ` ` with `0`
+storm_data2$CROPDMGEXP[storm_data2$CROPDMGEXP %in% c('?', '-', '', '+')] <- '0'
+
+# replace K, M, B, H with 3, 6, 9, 2 respectively
+storm_data2$CROPDMGEXP[storm_data2$CROPDMGEXP == 'K'] <- '3'
+storm_data2$CROPDMGEXP[storm_data2$CROPDMGEXP == 'M'] <- '6'
+storm_data2$CROPDMGEXP[storm_data2$CROPDMGEXP == 'B'] <- '9'
+storm_data2$CROPDMGEXP[storm_data2$CROPDMGEXP == 'H'] <- '2'
+storm_data2$CROPDMGEXP <- as.numeric(storm_data2$CROPDMGEXP)
+
+
+# create new field with multiplied values
+storm_data2 <- mutate(storm_data2, crop.damage = CROPDMG * (10 ^ CROPDMGEXP))
+
+# next, let's just drop the fields we're not interested in:
+storm_data3 <- select(storm_data2, EVTYPE3, INJURIES, FATALITIES, property.damage, crop.damage)
+```
+
+
+### Most harmful with respect to population health, specifically fatalities?
+
+```{r}
+fatal <- storm_data3 %>% group_by(EVTYPE3) %>% summarize(total.fatalities=sum(FATALITIES)) %>%  
+    arrange(desc(total.fatalities))
+top.fatal <- head(fatal, n=10)
+top.fatal
+
+injuries <- storm_data3 %>% group_by(EVTYPE3) %>% summarize(total.injuries=sum(INJURIES)) %>%  
+    arrange(desc(total.injuries))
+top.injuries <- head(injuries, n=10)
+top.injuries
+```
+
+This shows that tornados are horrific events that cause some major fatalities amongst the different storm groups. This step will plot the analysis further.
+
+Let's show this graphically:
+
+```{r}
+require(ggplot2)
+
+par(mfrow=c(1, 2), mar = c(12, 4, 2, 2.5), cex=0.7)
+barplot(top.fatal$total.fatalities, names.arg=top.fatal$EVTYPE3, ylab='Fatalities', las=3, 
+        main='Fatalities by Event type')
+barplot(top.injuries$total.injuries, names.arg=top.injuries$EVTYPE3, ylab='Injuries', las=3, 
+        main='Injuries by Event type')
+```
+
+## Most harmful with respect to the economy
+
+Next, we look at the cost of these events to the economy. We look at both property damage and damage to crops:
+
+```{r}
+property <- storm_data3 %>% group_by(EVTYPE3) %>% summarize(total.property.damage=sum(property.damage)) %>%  
+    arrange(desc(total.property.damage))
+top.property <- head(property, n=10)
+top.property
+```
+
+```{r}
+crop <- storm_data3 %>% group_by(EVTYPE3) %>% summarize(total.crop.damage=sum(crop.damage)) %>%  
+    arrange(desc(total.crop.damage))
+top.crop <- head(crop, n=10)
+top.crop
+```
+
+```{r}
+require(ggplot2)
+
+par(mfrow=c(1, 2), mar = c(12, 4, 2, 2.5), cex=0.7)
+barplot(top.property$total.property.damage / 1000, names.arg=top.property$EVTYPE3, ylab='Property Damage (1000 $)', las=3, 
+        main='Property Damage by Event type')
+barplot(top.crop$total.crop.damage / 1000, names.arg=top.crop$EVTYPE3, ylab='Crop Damage (1000 $)', las=3, 
+        main='Crop Damage by Event type')
+```
+
+From this analysis, it seems as though Hurricaines and hurricaine typoons cause significantly more crop damage amongst the storm groups. 
+
+We can also see that `FLOOD` causes the most property damage, with `HURRICANETYPHOON` and `TORNADO` among the top 3, as well.
+
+
+
+
+
